@@ -185,11 +185,11 @@ def random_perspective(im,
     T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * height  # y translation (pixels)
 
     # Combined rotation matrix
-    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
+    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT  越重要的变换放越后面
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
-        if perspective:
+        if perspective:#如果做透视变换  会拿整个M矩阵处理  也就是上面提到的  perspective不为0，就需要做rescale
             im = cv2.warpPerspective(im, M, dsize=(width, height), borderValue=(114, 114, 114))
-        else:  # affine
+        else:  #这里是反射 如果是做反射变换的 那么不会拿变换矩阵的最后一列 所以原本平行的边也会平行  而透视变换不能保证边是平行的  所以要对透视变换的标签位置进行同样的变换
             im = cv2.warpAffine(im, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
 
     # Visualize
@@ -203,7 +203,7 @@ def random_perspective(im,
     if n:
         use_segments = any(x.any() for x in segments) and len(segments) == n
         new = np.zeros((n, 4))
-        if use_segments:  # warp segments
+        if use_segments:  # warp segments 由于我们的图片不用分割了直接看下面
             segments = resample_segments(segments)  # upsample
             for i, segment in enumerate(segments):
                 xy = np.ones((len(segment), 3))
@@ -225,7 +225,7 @@ def random_perspective(im,
             y = xy[:, [1, 3, 5, 7]]
             new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
 
-            # clip
+            # clip这里就是判断图片有没有越界
             new[:, [0, 2]] = new[:, [0, 2]].clip(0, width)
             new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
 
@@ -237,17 +237,19 @@ def random_perspective(im,
     return im, targets
 
 
-def copy_paste(im, labels, segments, p=0.5):
+def copy_paste(im, labels, segments, p=0.5):#p这个参数是随机化种子  就是假如物体进行合并 且1>p>0那么它就会让物体乘以这个p进行部分筛选
     # Implement Copy-Paste augmentation https://arxiv.org/abs/2012.07177, labels as nx5 np.array(cls, xyxy)
     n = len(segments)
     if p and n:
         h, w, c = im.shape  # height, width, channels
         im_new = np.zeros(im.shape, np.uint8)
-        for j in random.sample(range(n), k=round(p * n)):
+        for j in random.sample(range(n), k=round(p * n)):#在这里
             l, s = labels[j], segments[j]
             box = w - l[3], l[2], w - l[1], l[4]
-            ioa = bbox_ioa(box, labels[:, 1:5])  # intersection over area
-            if (ioa < 0.30).all():  # allow 30% obscuration of existing labels
+            ioa = bbox_ioa(box, labels[:, 1:5])  # intersection over area到这里是计算我们贴图过来和我们底图的iou不懂的可以去看之前ppt的分割填补透视方法
+            if (ioa < 0.30).all():  # allow 30% obscuration of existing labels  比较我们移过来的贴图和地图的iou，也就iou小于0.3就拿来用，为什么？ 因为 ，
+                # 分割填补不太需要太大的iou我们主要是增强我们训练出模型对物体的辨别能力，
+                #在多个物体中找到正确物体的能力 ，并非我们后面的推理 不好搞反
                 labels = np.concatenate((labels, [[l[0], *box]]), 0)
                 segments.append(np.concatenate((w - s[:, 0:1], s[:, 1:2]), 1))
                 cv2.drawContours(im_new, [segments[j].astype(np.int32)], -1, (1, 1, 1), cv2.FILLED)

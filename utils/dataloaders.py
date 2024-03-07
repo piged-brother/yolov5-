@@ -427,7 +427,7 @@ class LoadStreams:
 
 def img2label_paths(img_paths):
     # Define label paths as a function of image paths
-    sa, sb = f'{os.sep}images{os.sep}', f'{os.sep}labels{os.sep}'  # /images/, /labels/ substrings
+    sa, sb = f'{os.sep}images{os.sep}', f'{os.sep}labels{os.sep}'  # /images/, /labels/ substrings  定义了图片和标签  把图片路径的/images/替换成 /labels/ 所以我们自己的训练集应该
     return [sb.join(x.rsplit(sa, 1)).rsplit('.', 1)[0] + '.txt' for x in img_paths]
 
 
@@ -440,12 +440,12 @@ class LoadImagesAndLabels(Dataset):
                  path,
                  img_size=640,
                  batch_size=16,
-                 augment=False,
-                 hyp=None,
-                 rect=False,
-                 image_weights=False,
-                 cache_images=False,
-                 single_cls=False,
+                 augment=False,#是否使用数据增强包
+                 hyp=None,#在/data/hyps加载里面的配置文件
+                 rect=False,#是不是用矩形训练方式，降低计算量
+                 image_weights=False,#模型预训练权重
+                 cache_images=False,#缓存模型的路径
+                 single_cls=False,#是否是单个类
                  stride=32,
                  pad=0.0,
                  min_items=0,
@@ -461,6 +461,7 @@ class LoadImagesAndLabels(Dataset):
         self.path = path
         self.albumentations = Albumentations(size=img_size) if augment else None
 
+        #这里是读取所有的图片
         try:
             f = []  # image files
             for p in path if isinstance(path, list) else [path]:
@@ -482,15 +483,15 @@ class LoadImagesAndLabels(Dataset):
         except Exception as e:
             raise Exception(f'{prefix}Error loading data from {path}: {e}\n{HELP_URL}') from e
 
-        # Check cache
-        self.label_files = img2label_paths(self.im_files)  # labels
-        cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')
+        # Check cache  将图片和对应标签文件读进来，再把标签文件解析缓存到本地，那么下一次就不用解析标签
+        self.label_files = img2label_paths(self.im_files)  # label  这里是反推出标签文件的路径   就是减少代码冗余不用刻意的去写读取标签的代码
+        cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache') #这里就是把images和labels放到一个大文件夹下（放到父目录下）
         try:
             cache, exists = np.load(cache_path, allow_pickle=True).item(), True  # load dict
             assert cache['version'] == self.cache_version  # matches current version
             assert cache['hash'] == get_hash(self.label_files + self.im_files)  # identical hash
         except Exception:
-            cache, exists = self.cache_labels(cache_path, prefix), False  # run cache ops
+            cache, exists = self.cache_labels(cache_path, prefix), False  # run cache ops#过滤文件 比如判断文件找不到，标签不对等等
 
         # Display cache
         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupt, total
@@ -502,16 +503,16 @@ class LoadImagesAndLabels(Dataset):
         assert nf > 0 or not augment, f'{prefix}No labels found in {cache_path}, can not start training. {HELP_URL}'
 
         # Read cache
-        [cache.pop(k) for k in ('hash', 'version', 'msgs')]  # remove items
-        labels, shapes, self.segments = zip(*cache.values())
-        nl = len(np.concatenate(labels, 0))  # number of labels
+        [cache.pop(k) for k in ('hash', 'version', 'msgs')]  # 解析cacha文件的value
+        labels, shapes, self.segments = zip(*cache.values()) # 解析cacha文件的value
+        nl = len(np.concatenate(labels, 0))  # 读出标签数量
         assert nl > 0 or not augment, f'{prefix}All labels empty in {cache_path}, can not start training. {HELP_URL}'
         self.labels = list(labels)
         self.shapes = np.array(shapes)
         self.im_files = list(cache.keys())  # update
-        self.label_files = img2label_paths(cache.keys())  # update
+        self.label_files = img2label_paths(cache.keys())  # 重新对图片路径进行反推label文件路径  为什么要更新  因为cache_label函数把有用的图片过滤出来了，剩下这些是有用的图片需要重新写入文件夹
 
-        # Filter images
+        # Filter images 这里就是过滤获得的图片的类别是不是再我们的类别里面
         if min_items:
             include = np.array([len(x) >= min_items for x in self.labels]).nonzero()[0].astype(int)
             LOGGER.info(f'{prefix}{n - len(include)}/{n} images filtered from dataset')
@@ -521,7 +522,7 @@ class LoadImagesAndLabels(Dataset):
             self.segments = [self.segments[i] for i in include]
             self.shapes = self.shapes[include]  # wh
 
-        # Create indices
+        # Create indices (np.arange(n) / batch_size).astype(int) 这里的意思就是假如我们有100章图片 batch=16  那么我们处理图片的时候 range(100)/16 取整就可以得到我们的batch属于哪一个类（就是取模分类操作）
         n = len(self.shapes)  # number of images
         bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
         nb = bi[-1] + 1  # number of batches
@@ -529,8 +530,8 @@ class LoadImagesAndLabels(Dataset):
         self.n = n
         self.indices = range(n)
 
-        # Update labels
-        include_class = []  # filter labels to include only these classes (optional)
+        # Update labels 这就是普通的根据个人的想法进行标签过滤具体看下面注释
+        include_class = []  # 举个例子include_class = ['dog','cat'....]那么他就会只过滤dog和cat的两个标签的动物
         self.segments = list(self.segments)
         include_class_array = np.array(include_class).reshape(1, -1)
         for i, (label, segment) in enumerate(zip(self.labels, self.segments)):
@@ -539,35 +540,35 @@ class LoadImagesAndLabels(Dataset):
                 self.labels[i] = label[j]
                 if segment:
                     self.segments[i] = [segment[idx] for idx, elem in enumerate(j) if elem]
-            if single_cls:  # single-class training, merge all classes into 0
+            if single_cls:  # 这个值意味着它为1 就代表把'dog','cat'...分为一个大类 放一起
                 self.labels[i][:, 0] = 0
 
-        # Rectangular Training
+        # (最重要!!!)Rectangular Training是不是用矩形训练  采用可以减少训练过程种的计算量和推理的计算量
         if self.rect:
             # Sort by aspect ratio
             s = self.shapes  # wh
-            ar = s[:, 1] / s[:, 0]  # aspect ratio
-            irect = ar.argsort()
+            ar = s[:, 1] / s[:, 0]  # aspect ratio计算高宽比
+            irect = ar.argsort()#argsort返回的是排序好的列表标签
             self.im_files = [self.im_files[i] for i in irect]
             self.label_files = [self.label_files[i] for i in irect]
             self.labels = [self.labels[i] for i in irect]
             self.segments = [self.segments[i] for i in irect]
-            self.shapes = s[irect]  # wh
-            ar = ar[irect]
+            self.shapes = s[irect]  # 这个shapes是排序好的宽高  从大到小
+            ar = ar[irect]#这个里面的是排序好的宽高比  从大到小
 
-            # Set training image shapes
+            # Set training image shapes 设置图片适当的高宽比默认图片高宽数组比例是[高，宽]就是[1,1]意思是和原来的一样
             shapes = [[1, 1]] * nb
             for i in range(nb):
-                ari = ar[bi == i]
-                mini, maxi = ari.min(), ari.max()
-                if maxi < 1:
-                    shapes[i] = [maxi, 1]
-                elif mini > 1:
-                    shapes[i] = [1, 1 / mini]
+                ari = ar[bi == i]#bi是batch的索引
+                mini, maxi = ari.min(), ari.max()#拿到最大的和最小的高宽比
+                if maxi < 1:#最大高宽比小于1代表 所有的图片全部都是宽>高
+                    shapes[i] = [maxi, 1]#所以根据上面的判定我们可以确定这个图片是扁的，那么我们不对宽进行缩放，我们只需要对高进行拉长就行  因为我们需要把图片处理成640x640 (这是个举例)
+                elif mini > 1:#所有图片  宽<高
+                    shapes[i] = [1, 1 / mini]#同理 我们只需要缩小我们的宽就行
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride#然后根据每一个shapes里面的高宽比来计算batch_shapes里面所有的高宽
 
-        # Cache images into RAM/disk for faster training
+        # Cache images into RAM/disk for faster training图片缓存可以不用关注
         if cache_images == 'ram' and not self.check_cache_ram(prefix=prefix):
             cache_images = False
         self.ims = [None] * n
@@ -614,13 +615,14 @@ class LoadImagesAndLabels(Dataset):
                         desc=desc,
                         total=len(self.im_files),
                         bar_format=TQDM_BAR_FORMAT)
+            #对异常信息进行累加处理，得出多少异常
             for im_file, lb, shape, segments, nm_f, nf_f, ne_f, nc_f, msg in pbar:
                 nm += nm_f
                 nf += nf_f
                 ne += ne_f
                 nc += nc_f
                 if im_file:
-                    x[im_file] = [lb, shape, segments]
+                    x[im_file] = [lb, shape, segments]#这里的x字典数组代表着处理的表亲啊信息，宽高和多边形图片坐标
                 if msg:
                     msgs.append(msg)
                 pbar.desc = f'{desc} {nf} images, {nm + ne} backgrounds, {nc} corrupt'
@@ -635,12 +637,12 @@ class LoadImagesAndLabels(Dataset):
         x['msgs'] = msgs  # warnings
         x['version'] = self.cache_version  # cache version
         try:
-            np.save(path, x)  # save cache for next time
+            np.save(path, x)  # save cache for next time x字典会用numpy保存再本地方便下次再用
             path.with_suffix('.cache.npy').rename(path)  # remove .npy suffix
             LOGGER.info(f'{prefix}New cache created: {path}')
         except Exception as e:
             LOGGER.warning(f'{prefix}WARNING ⚠️ Cache directory {path.parent} is not writeable: {e}')  # not writeable
-        return x
+        return x#最后返回的字典包含着‘hash’ ‘results’，‘msgs’ ‘version’信息
 
     def __len__(self):
         return len(self.im_files)
@@ -655,10 +657,10 @@ class LoadImagesAndLabels(Dataset):
         index = self.indices[index]  # linear, shuffled, or image_weights
 
         hyp = self.hyp
-        mosaic = self.mosaic and random.random() < hyp['mosaic']
-        if mosaic:
+        mosaic = self.mosaic and random.random() < hyp['mosaic']#mosaic参数默认等于1 再data/hyps/hyp.no-augmentation.yaml里面
+        if mosaic:#是否采用马赛克训练方法  不想用可以再data/hyps/hyp.no-augmentation.yaml里面将mosaic调成0
             # Load mosaic
-            img, labels = self.load_mosaic(index)
+            img, labels = self.load_mosaic(index)#传入图片的index
             shapes = None
 
             # MixUp augmentation
@@ -752,18 +754,19 @@ class LoadImagesAndLabels(Dataset):
         # YOLOv5 4-mosaic loader. Loads 1 image + 3 random images into a 4-image mosaic
         labels4, segments4 = [], []
         s = self.img_size
-        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border)  # mosaic center x, y
+
+        yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border)  # 初始化中心点  [320,960]这个区域
         indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
         random.shuffle(indices)
         for i, index in enumerate(indices):
             # Load image
-            img, _, (h, w) = self.load_image(index)
+            img, _, (h, w) = self.load_image(index)#读取图片
 
             # place img in img4
             if i == 0:  # top left
-                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
-                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
-                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  #生成背景图
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # 然后计算我们要贴的图的左上角和右下角的范围坐标
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # 这里是计算我们真实要贴的图的左上角和右下角的实际坐标    下面的同理
             elif i == 1:  # top right
                 x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
                 x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
@@ -774,25 +777,26 @@ class LoadImagesAndLabels(Dataset):
                 x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
                 x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
-            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax] 然后再把左上  左下 右上 右下四张图片拼在一起
             padw = x1a - x1b
             padh = y1a - y1b
 
-            # Labels
+            # Labels 然后下面的是标签区域  假如我们实际图片大于我们要贴的背景的大小 那么我们的标签也要相对应的进行位移
             labels, segments = self.labels[index].copy(), self.segments[index].copy()
             if labels.size:
-                labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format
+                #这里把mosic后的坐标加上对应 的偏移量，以及归一化处理
+                labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # 这段代码的作用是将labels数组中包含的归一化边界框坐标转换为像素坐标格式，并将其存储回labels数组中，以便后续处理或显示。
                 segments = [xyn2xy(x, w, h, padw, padh) for x in segments]
             labels4.append(labels)
             segments4.extend(segments)
-
-        # Concat/clip labels
+        #转换完成后查看有无越界
+        # Concat/clip labels  判断标签有无越界，越界的放到图片区域内
         labels4 = np.concatenate(labels4, 0)
         for x in (labels4[:, 1:], *segments4):
             np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
         # img4, labels4 = replicate(img4, labels4)  # replicate
 
-        # Augment
+        # Augment copy_paste分割填补
         img4, labels4, segments4 = copy_paste(img4, labels4, segments4, p=self.hyp['copy_paste'])
         img4, labels4 = random_perspective(img4,
                                            labels4,
@@ -995,15 +999,15 @@ def verify_image_label(args):
     try:
         # verify images
         im = Image.open(im_file)
-        im.verify()  # PIL verify
-        shape = exif_size(im)  # image size
-        assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
-        assert im.format.lower() in IMG_FORMATS, f'invalid image format {im.format}'
+        im.verify()  # 验证图片是否正常读取
+        shape = exif_size(im)  # 读取图片
+        assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'#对比图片大小是否大于9  小于十不可用
+        assert im.format.lower() in IMG_FORMATS, f'invalid image format {im.format}'#判断扩展名是不是在我们所确定的扩展名内  如果不在则corrupt加1
         if im.format.lower() in ('jpg', 'jpeg'):
             with open(im_file, 'rb') as f:
                 f.seek(-2, 2)
                 if f.read() != b'\xff\xd9':  # corrupt JPEG
-                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, 'JPEG', subsampling=0, quality=100)
+                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, 'JPEG', subsampling=0, quality=100)#旋转矫正  比如图片一开始不是正的但是我们需要旋转矫正，比如视频什么的一开始都不是正的
                     msg = f'{prefix}WARNING ⚠️ {im_file}: corrupt JPEG restored and saved'
 
         # verify labels
@@ -1011,16 +1015,20 @@ def verify_image_label(args):
             nf = 1  # label found
             with open(lb_file) as f:
                 lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
-                if any(len(x) > 6 for x in lb):  # is segment
-                    classes = np.array([x[0] for x in lb], dtype=np.float32)
-                    segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]  # (cls, xy1...)
-                    lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
-                lb = np.array(lb, dtype=np.float32)
+                if any(len(x) > 6 for x in lb):  # 如果一个标签文件存在一个大于6个数值的点，那么它就不是普通的长方形图片，而是多边形图片
+                    classes = np.array([x[0] for x in lb], dtype=np.float32)#这个数组第一列是segment的类别
+
+                    segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in lb]# # 除了第一列全部都是segment的坐标  但是我们需要将这个数据转换为多行两列的形式，像这样(cls, xy1...)
+                    # 然后我们通过segments2boxes方法把左上角和右下角坐标找出来
+                    # 将classes数组变成多行1列模式（因为此时的classes是一维标签我们需要转置拼接我们的xywh坐标），然后变成像这样(cls, xywh)
+                    lb = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)
+                lb = np.array(lb, dtype=np.float32)#这个lb是标签名和边框数据左上角和右下角坐标数据
             nl = len(lb)
             if nl:
                 assert lb.shape[1] == 5, f'labels require 5 columns, {lb.shape[1]} columns detected'
                 assert (lb >= 0).all(), f'negative label values {lb[lb < 0]}'
                 assert (lb[:, 1:] <= 1).all(), f'non-normalized or out of bounds coordinates {lb[:, 1:][lb[:, 1:] > 1]}'
+                #上面三行是进行归一化检查 类别必须要五列
                 _, i = np.unique(lb, axis=0, return_index=True)
                 if len(i) < nl:  # duplicate row check
                     lb = lb[i]  # remove duplicates
@@ -1033,7 +1041,8 @@ def verify_image_label(args):
         else:
             nm = 1  # label missing
             lb = np.zeros((0, 5), dtype=np.float32)
-        return im_file, lb, shape, segments, nm, nf, ne, nc, msg
+        return im_file, lb, shape, segments, nm, nf, ne, nc, msg #图片数据  图片标签（多行五列），多边形图片上的点， 后面五个为异常信息  nummissing？ numfound？ 是就等于1 然后返回错误信息
+
     except Exception as e:
         nc = 1
         msg = f'{prefix}WARNING ⚠️ {im_file}: ignoring corrupt image/label: {e}'
